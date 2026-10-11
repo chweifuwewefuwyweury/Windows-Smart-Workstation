@@ -17,8 +17,8 @@
 
 ## 🖼️ 界面预览
 
-![软件截图](docs/screenshot.png)
-> *(提示：把软件运行截图放到项目文件夹内并在这里引用，非常直观！)*
+![软件截图](ys.png)
+
 
 ---
 
@@ -28,3 +28,10 @@
 
 1. 前往右侧的 **[Releases页面](https://github.com/chweifuwewefuwyweury/Windows-Smart-Workstation/releases)**。
 2. 下载最新版本的 `Smart Workbench.exe`。
+
+
+---
+
+## 📥 开发者
+
+### 我和hjr
