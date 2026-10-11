@@ -1,0 +1,1231 @@
+import json
+import math
+import os
+import ctypes
+import threading
+import datetime
+import tkinter as tk
+from tkinter import filedialog, messagebox, font as tkfont
+import urllib.parse
+import urllib.request
+
+# ================= 1. DPI 高分屏自适应 =================
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
+# ================= 2. 物理减速缓动算法 =================
+def ease_out_quint(t):
+    return 1 - math.pow(1 - t, 5)
+
+
+# ================= 3. Win11 现代渐变背景画布 =================
+class FluentBackground(tk.Canvas):
+    def __init__(self, parent, is_dark=True, **kwargs):
+        super().__init__(parent, highlightthickness=0, bd=0, **kwargs)
+        self.is_dark = is_dark
+        self.bind("<Configure>", self._draw_gradient)
+
+    def set_mode(self, is_dark):
+        self.is_dark = is_dark
+        self._draw_gradient()
+
+    def _draw_gradient(self, event=None):
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        if w <= 0 or h <= 0:
+            return
+
+        if self.is_dark:
+            c1, c2 = (24, 28, 36), (15, 17, 23)
+        else:
+            c1, c2 = (240, 244, 250), (225, 232, 242)
+
+        steps = 60
+        for i in range(steps):
+            r = int(c1[0] + (c2[0] - c1[0]) * (i / steps))
+            g = int(c1[1] + (c2[1] - c1[1]) * (i / steps))
+            b = int(c1[2] + (c2[2] - c1[2]) * (i / steps))
+            color = f"#{r:02x}{g:02x}{b:02x}"
+            y1 = int(h * (i / steps))
+            y2 = int(h * ((i + 1) / steps))
+            self.create_rectangle(0, y1, w, y2, fill=color, outline=color)
+
+
+# ================= 4. Win11 现代圆角阴影卡片 =================
+class FluentCard(tk.Canvas):
+    def __init__(self, parent, radius=12, bg_color="#272727", border_color="#3a3a3a", **kwargs):
+        parent_bg = "#181c24"
+        try:
+            if isinstance(parent, dict) or hasattr(parent, "__getitem__"):
+                p_bg = parent["bg"]
+                if p_bg:
+                    parent_bg = p_bg
+        except Exception:
+            pass
+
+        super().__init__(parent, bg=parent_bg, highlightthickness=0, bd=0, **kwargs)
+        self.radius = radius
+        self.bg_color = bg_color
+        self.border_color = border_color
+        self.bind("<Configure>", self._redraw)
+
+    def set_colors(self, bg_color, border_color):
+        self.bg_color = bg_color
+        self.border_color = border_color
+        if self.master:
+            try:
+                p_bg = self.master["bg"]
+                if p_bg:
+                    self.config(bg=p_bg)
+            except Exception:
+                pass
+        self._redraw()
+
+    def _redraw(self, event=None):
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        r = min(self.radius, w // 2, h // 2)
+
+        if r > 0 and w > 0 and h > 0:
+            self.create_arc(0, 0, 2 * r, 2 * r, start=90, extent=90, fill=self.border_color, outline=self.border_color)
+            self.create_arc(w - 2 * r, 0, w, 2 * r, start=0, extent=90, fill=self.border_color,
+                            outline=self.border_color)
+            self.create_arc(w - 2 * r, h - 2 * r, w, h, start=270, extent=90, fill=self.border_color,
+                            outline=self.border_color)
+            self.create_arc(0, h - 2 * r, 2 * r, h, start=180, extent=90, fill=self.border_color,
+                            outline=self.border_color)
+            self.create_rectangle(r, 0, w - r, h, fill=self.border_color, outline=self.border_color)
+            self.create_rectangle(0, r, w, h - r, fill=self.border_color, outline=self.border_color)
+
+            self.create_arc(1, 1, 2 * r - 1, 2 * r - 1, start=90, extent=90, fill=self.bg_color, outline=self.bg_color)
+            self.create_arc(w - 2 * r + 1, 1, w - 1, 2 * r - 1, start=0, extent=90, fill=self.bg_color,
+                            outline=self.bg_color)
+            self.create_arc(w - 2 * r + 1, h - 2 * r + 1, w - 1, h - 1, start=270, extent=90, fill=self.bg_color,
+                            outline=self.bg_color)
+            self.create_arc(1, h - 2 * r + 1, 2 * r - 1, h - 1, start=180, extent=90, fill=self.bg_color,
+                            outline=self.bg_color)
+            self.create_rectangle(r, 1, w - r, h - 1, fill=self.bg_color, outline=self.bg_color)
+            self.create_rectangle(1, r, w - 1, h - r, fill=self.bg_color, outline=self.bg_color)
+
+
+# ================= 5. 天气关键词应急翻译字典 =================
+WEATHER_DICT = {
+    "sunny": "晴朗", "clear": "晴朗", "partly cloudy": "多云", "cloudy": "阴天", "overcast": "阴天",
+    "mist": "薄雾", "fog": "大雾", "haze": "霾", "smoky haze": "烟雾/霾", "smoke": "烟雾",
+    "freezing fog": "冻雾", "patchy rain possible": "局部有雨", "patchy snow possible": "局部有雪",
+    "thundery outbreaks possible": "可能有雷阵雨", "blowing snow": "吹雪", "blizzard": "暴风雪",
+    "drizzle": "细雨/毛毛雨", "light rain": "小雨", "moderate rain": "中雨", "heavy rain": "大雨",
+    "light snow": "小雪", "moderate snow": "中雪", "heavy snow": "大雪", "ice pellets": "冰雹",
+    "thunderstorm": "雷暴", "rain shower": "阵雨", "snow shower": "阵雪"
+}
+
+
+def translate_weather(text):
+    if not text:
+        return "未知"
+    lower_text = text.strip().lower()
+    if lower_text in WEATHER_DICT:
+        return WEATHER_DICT[lower_text]
+    for en, zh in WEATHER_DICT.items():
+        if en in lower_text:
+            return zh
+    return text
+
+
+# ================= 6. 主程序 =================
+class Win11App:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Win11 现代多功能工作台")
+        self.root.geometry("1060x700")
+        self.root.minsize(860, 600)
+        self.root.resizable(True, True)
+
+        now_hour = datetime.datetime.now().hour
+        self.is_dark_mode = not (6 <= now_hour < 18)
+
+        self.themes = {
+            "dark": {
+                "window_bg": "#181c24",
+                "topbar_bg": "#222733",
+                "card_bg": "#222733",
+                "card_border": "#313848",
+                "card_hover": "#2c3343",
+                "accent": "#0078d4",
+                "accent_hover": "#1086e0",
+                "text_primary": "#ffffff",
+                "text_secondary": "#9eaac2",
+                "entry_bg": "#181c24",
+                "menu_bg": "#222733",
+                "menu_border": "#3a4356",
+                "menu_hover": "#2c3343",
+                "btn_bg": "#2a3140"
+            },
+            "light": {
+                "window_bg": "#f0f4fa",
+                "topbar_bg": "#ffffff",
+                "card_bg": "#ffffff",
+                "card_border": "#e1e8f2",
+                "card_hover": "#f5f8fc",
+                "accent": "#0067b8",
+                "accent_hover": "#005a9e",
+                "text_primary": "#1b2533",
+                "text_secondary": "#65758c",
+                "entry_bg": "#f0f4fa",
+                "menu_bg": "#ffffff",
+                "menu_border": "#d8e1ed",
+                "menu_hover": "#eef4fc",
+                "btn_bg": "#e6edf5"
+            }
+        }
+
+        self.icon_colors = {
+            "🏠": "#0078d4",
+            "📁": "#ffb900",
+            "📂": "#ff8c00",
+            "📄": "#107c41",
+            "☑": "#28a745",
+            "📌": "#ff4d4f",
+            "✔": "#52c41a",
+            "⏳": "#faad14",
+            "🎉": "#ff7a45",
+            "➕": "#0078d4",
+            "✅": "#52c41a",
+            "↩️": "#fa8c16",
+            "🏷️": "#1890ff",
+            "⚡": "#fadb14",
+            "📋": "#d13438",
+            "🧹": "#ff4d4f",
+            "⌛": "#faad14",
+            "🔢": "#881798",
+            "🌤️": "#ff8c00",
+            "🌤": "#ff8c00",
+            "🔍": "#1890ff",
+            "🌍": "#52c41a",
+            "📍": "#ff4d4f",
+            "🌈": "#ff7a45",
+            "🌡️": "#ff4d4f",
+            "💧": "#1890ff",
+            "💨": "#13c2c2",
+            "⚙️": "#8c8c8c",
+            "🌙": "#fadb14",
+            "☀️": "#ff8c00"
+        }
+
+        self.bg_canvas = FluentBackground(self.root)
+        self.bg_canvas.pack(fill="both", expand=True)
+
+        self.base_width = 1060
+        self.base_height = 700
+        self._init_responsive_fonts()
+
+        self.pending_todos = ["完成科技运动会项目GUI重构", "检查 Python 代码异常"]
+        self.completed_todos = ["设计 UI 草图"]
+
+        self.selected_files = []
+        self.clipboard_history = []
+        self.calc_history = []
+        self.last_clipboard_text = ""
+        self.menu_expanded = False
+        self.current_location_zh = "正在获取定位..."
+
+        self.apply_theme()
+        self.create_layout()
+        self.monitor_clipboard()
+
+        threading.Thread(target=self._auto_detect_location, daemon=True).start()
+
+        self.root.bind_all("<Button-1>", self._on_global_click)
+        self.root.bind("<Configure>", self._on_window_resize)
+
+    def _init_responsive_fonts(self):
+        self.font_title = tkfont.Font(family="Microsoft YaHei UI", size=18, weight="bold")
+        self.font_subtitle = tkfont.Font(family="Microsoft YaHei UI", size=15, weight="bold")
+        self.font_header = tkfont.Font(family="Microsoft YaHei UI", size=11, weight="bold")
+        self.font_body = tkfont.Font(family="Microsoft YaHei UI", size=10)
+        self.font_small = tkfont.Font(family="Microsoft YaHei UI", size=9)
+        self.font_calc_display = tkfont.Font(family="Segoe UI", size=22, weight="bold")
+        self.font_calc_btn = tkfont.Font(family="Segoe UI", size=12, weight="bold")
+
+    def _on_window_resize(self, event):
+        if event.widget == self.root:
+            w, h = event.width, event.height
+            scale = max(0.85, min(1.3, min(w / self.base_width, h / self.base_height)))
+
+            self.font_title.configure(size=int(18 * scale))
+            self.font_subtitle.configure(size=int(15 * scale))
+            self.font_header.configure(size=int(11 * scale))
+            self.font_body.configure(size=int(10 * scale))
+            self.font_small.configure(size=int(9 * scale))
+            self.font_calc_display.configure(size=int(22 * scale))
+            self.font_calc_btn.configure(size=int(12 * scale))
+
+    def _auto_detect_location(self):
+        try:
+            url = "http://ip-api.com/json/?lang=zh-CN"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                city = data.get("city") or data.get("regionName") or "北京"
+                self.current_location_zh = city
+        except Exception:
+            self.current_location_zh = "北京"
+
+        if getattr(self, "current_page_name", "") == "天气查询" and hasattr(self, "city_entry"):
+            self.root.after(0, self._update_location_entry)
+
+    def _update_location_entry(self):
+        if hasattr(self, "city_entry") and self.city_entry.winfo_exists():
+            self.city_entry.delete(0, tk.END)
+            self.city_entry.insert(0, self.current_location_zh)
+            self._fetch_weather_async()
+
+    def apply_theme(self):
+        mode = "dark" if self.is_dark_mode else "light"
+        self.colors = self.themes[mode]
+        self.bg_canvas.set_mode(self.is_dark_mode)
+
+    def toggle_theme(self):
+        self.is_dark_mode = not self.is_dark_mode
+        self.apply_theme()
+
+        self.top_bar_card.set_colors(self.colors["topbar_bg"], self.colors["card_border"])
+        self.top_bar_inner.config(bg=self.colors["topbar_bg"])
+        self.nav_frame.config(bg=self.colors["topbar_bg"])
+        self.btn_menu.config(bg=self.colors["topbar_bg"], fg=self.colors["accent"])
+        self.btn_home.config(bg=self.colors["topbar_bg"], fg=self.icon_colors["🏠"])
+        self.lbl_title.config(bg=self.colors["topbar_bg"], fg=self.colors["text_primary"])
+
+        self.btn_theme.config(
+            text=f"{'🌙' if self.is_dark_mode else '☀️'} {'深色模式' if self.is_dark_mode else '浅色模式'}",
+            bg=self.colors["btn_bg"], fg=self.colors["text_primary"])
+        self.menu_dropdown.config(bg=self.colors["menu_bg"], highlightbackground=self.colors["menu_border"])
+        self._refresh_menu_items_theme()
+
+        self.switch_page(self.current_page_name)
+
+    def _create_colored_label_group(self, parent, icon, text, font=None, bg=None, text_fg=None, pady=0):
+        font = font or self.font_subtitle
+        bg = bg or parent["bg"]
+        text_fg = text_fg or self.colors["text_primary"]
+        icon_col = self.icon_colors.get(icon, text_fg)
+
+        frame = tk.Frame(parent, bg=bg)
+        lbl_ic = tk.Label(frame, text=icon, fg=icon_col, bg=bg, font=font)
+        lbl_ic.pack(side="left", padx=(0, 6), pady=pady)
+        lbl_tx = tk.Label(frame, text=text, fg=text_fg, bg=bg, font=font)
+        lbl_tx.pack(side="left", pady=pady)
+        return frame
+
+    def create_layout(self):
+        self.top_bar_wrapper = tk.Frame(self.bg_canvas, bg=self.colors["window_bg"], height=55)
+        self.top_bar_wrapper.pack(fill="x", side="top", padx=20, pady=(15, 5))
+        self.top_bar_wrapper.pack_propagate(False)
+
+        self.top_bar_card = FluentCard(self.top_bar_wrapper, radius=12, bg_color=self.colors["topbar_bg"],
+                                       border_color=self.colors["card_border"])
+        self.top_bar_card.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        self.top_bar_inner = tk.Frame(self.top_bar_card, bg=self.colors["topbar_bg"])
+        self.top_bar_inner.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        self.nav_frame = tk.Frame(self.top_bar_inner, bg=self.colors["topbar_bg"])
+        self.nav_frame.pack(side="left", padx=15)
+
+        self.btn_menu = tk.Button(
+            self.nav_frame, text="☰", font=self.font_header,
+            bg=self.colors["topbar_bg"], fg=self.colors["accent"],
+            activebackground=self.colors["card_hover"], activeforeground=self.colors["accent"],
+            relief="flat", bd=0, cursor="hand2", command=self.toggle_menu
+        )
+        self.btn_menu.pack(side="left", padx=(0, 10))
+
+        self.btn_home = tk.Button(
+            self.nav_frame, text="🏠", font=self.font_header,
+            bg=self.colors["topbar_bg"], fg=self.icon_colors["🏠"],
+            activebackground=self.colors["card_hover"], activeforeground=self.icon_colors["🏠"],
+            relief="flat", bd=0, cursor="hand2", command=lambda: self.switch_page("主页")
+        )
+        self.btn_home.pack(side="left", padx=(0, 15))
+
+        self.lbl_title = tk.Label(
+            self.nav_frame, text="主页", font=self.font_header,
+            bg=self.colors["topbar_bg"], fg=self.colors["text_primary"]
+        )
+        self.lbl_title.pack(side="left")
+
+        theme_text = f"{'🌙' if self.is_dark_mode else '☀️'} {'深色模式' if self.is_dark_mode else '浅色模式'}"
+        self.btn_theme = tk.Button(self.top_bar_inner, text=theme_text, font=self.font_small,
+                                   bg=self.colors["btn_bg"], fg=self.colors["text_primary"],
+                                   relief="flat", bd=0, cursor="hand2", padx=12, pady=4,
+                                   command=self.toggle_theme)
+        self.btn_theme.pack(side="right", padx=15, pady=10)
+
+        self.menu_dropdown = tk.Frame(
+            self.bg_canvas, bg=self.colors["menu_bg"],
+            highlightthickness=1, highlightbackground=self.colors["menu_border"]
+        )
+        self.menu_items_widgets = []
+
+        sub_pages = [
+            ("🏠", "主页概览", "主页"),
+            ("📁", "文件批量重命名", "文件重命名"),
+            ("☑", "待办事项清单", "待办清单"),
+            ("📋", "剪贴板历史记录", "剪贴板历史"),
+            ("🔢", "科学计算器", "计算器"),
+            ("🌤️", "实时气象查询", "天气查询")
+        ]
+
+        for icon, name, page in sub_pages:
+            item_frame = tk.Frame(self.menu_dropdown, bg=self.colors["menu_bg"], cursor="hand2")
+            item_frame.pack(fill="x", pady=2, padx=4)
+
+            icon_color = self.icon_colors.get(icon, self.colors["text_primary"])
+
+            lbl_icon = tk.Label(
+                item_frame, text=icon, width=3, anchor="center",
+                bg=self.colors["menu_bg"], fg=icon_color,
+                font=("Segoe UI Emoji", 11, "bold")
+            )
+            lbl_icon.pack(side="left", padx=(8, 4), pady=6)
+
+            lbl_text = tk.Label(
+                item_frame, text=name, anchor="w",
+                bg=self.colors["menu_bg"], fg=self.colors["text_primary"],
+                font=("Microsoft YaHei UI", 10, "bold")
+            )
+            lbl_text.pack(side="left", fill="x", expand=True, pady=6)
+
+            for widget in (item_frame, lbl_icon, lbl_text):
+                widget.bind("<Button-1>", lambda e, p=page: self._on_menu_item_click(p))
+                widget.bind("<Enter>",
+                            lambda e, f=item_frame, i=lbl_icon, t=lbl_text: self._on_menu_hover(f, i, t, True))
+                widget.bind("<Leave>",
+                            lambda e, f=item_frame, i=lbl_icon, t=lbl_text: self._on_menu_hover(f, i, t, False))
+
+            self.menu_items_widgets.append((item_frame, lbl_icon, lbl_text, icon_color))
+
+        self.main_area = tk.Frame(self.bg_canvas, bg=self.colors["window_bg"])
+        self.main_area.pack(fill="both", expand=True, padx=20, pady=10)
+
+        self.current_frame = None
+        self.current_page_name = "主页"
+        self.switch_page("主页")
+
+    def _on_menu_hover(self, frame, lbl_icon, lbl_text, is_hover):
+        color = self.colors["menu_hover"] if is_hover else self.colors["menu_bg"]
+        frame.config(bg=color)
+        lbl_icon.config(bg=color)
+        lbl_text.config(bg=color)
+
+    def _refresh_menu_items_theme(self):
+        for frame, lbl_icon, lbl_text, icon_color in self.menu_items_widgets:
+            frame.config(bg=self.colors["menu_bg"])
+            lbl_icon.config(bg=self.colors["menu_bg"], fg=icon_color)
+            lbl_text.config(bg=self.colors["menu_bg"], fg=self.colors["text_primary"])
+
+    def toggle_menu(self):
+        if self.menu_expanded:
+            self.menu_dropdown.place_forget()
+            self.menu_expanded = False
+        else:
+            self.menu_dropdown.config(bg=self.colors["menu_bg"], highlightbackground=self.colors["menu_border"])
+            self._refresh_menu_items_theme()
+            self.menu_dropdown.place(x=20, y=72, width=320)
+            self.menu_dropdown.lift()
+            self.menu_expanded = True
+
+    def _on_global_click(self, event):
+        if not self.menu_expanded:
+            return
+
+        w = event.widget
+        while w:
+            if w in (self.menu_dropdown, self.btn_menu):
+                return
+            w = getattr(w, "master", None)
+
+        self.toggle_menu()
+
+    def _on_menu_item_click(self, page_name):
+        if self.menu_expanded:
+            self.toggle_menu()
+        self.switch_page(page_name)
+
+    # ================= 7. 页面切换动画 =================
+    def switch_page(self, page_name):
+        self.current_page_name = page_name
+        self.lbl_title.config(text=page_name)
+
+        if self.current_frame:
+            self.current_frame.destroy()
+
+        new_frame = tk.Frame(self.main_area, bg=self.colors["window_bg"])
+        self.current_frame = new_frame
+
+        if page_name == "主页":
+            self._build_home_dashboard(new_frame)
+        elif page_name == "文件重命名":
+            self._build_file_renamer(new_frame)
+        elif page_name == "待办清单":
+            self._build_todo_list(new_frame)
+        elif page_name == "剪贴板历史":
+            self._build_clipboard_history(new_frame)
+        elif page_name == "计算器":
+            self._build_calculator(new_frame)
+        elif page_name == "天气查询":
+            self._build_weather_query(new_frame)
+
+        start_y = 15
+        duration = 10
+        new_frame.place(relx=0, rely=0, relwidth=1, relheight=1, y=start_y)
+
+        def animate_step(step):
+            if not new_frame.winfo_exists():
+                return
+            t = step / duration
+            progress = ease_out_quint(t)
+            current_y = int(start_y * (1 - progress))
+            new_frame.place(relx=0, rely=0, relwidth=1, relheight=1, y=current_y)
+            if step < duration:
+                self.root.after(16, animate_step, step + 1)
+
+        animate_step(0)
+
+    # ================= 8. 功能模块 =================
+    def _build_home_dashboard(self, parent):
+        tk.Label(parent, text="欢迎进入智能工作台", fg=self.colors["text_primary"], bg=self.colors["window_bg"],
+                 font=self.font_title).pack(anchor="w", pady=(0, 2))
+
+        sub_head = tk.Frame(parent, bg=self.colors["window_bg"])
+        sub_head.pack(anchor="w", pady=(0, 15))
+        tk.Label(sub_head, text="探索丰富高效的工具生态", fg=self.colors["text_secondary"], bg=self.colors["window_bg"],
+                 font=self.font_body).pack(side="left")
+        tk.Label(sub_head, text="🚀", fg="#ff4d4f", bg=self.colors["window_bg"], font=self.font_body).pack(side="left",
+                                                                                                          padx=(4, 0))
+
+        grid_frame = tk.Frame(parent, bg=self.colors["window_bg"])
+        grid_frame.pack(fill="both", expand=True)
+
+        for i in range(2): grid_frame.grid_columnconfigure(i, weight=1, uniform="group1")
+        for i in range(3): grid_frame.grid_rowconfigure(i, weight=1, uniform="group2")
+
+        file_count = len(self.selected_files)
+        if file_count == 0:
+            file_detail = "未选择任何文件"
+        elif file_count == 1:
+            file_detail = f"选定: {os.path.basename(self.selected_files[0])}"
+        else:
+            file_detail = f"首个: {os.path.basename(self.selected_files[0])} (等{file_count}个)"
+
+        calc_detail = f"最近: {self.calc_history[-1]}" if self.calc_history else "暂无计算记录"
+
+        pending_count = len(self.pending_todos)
+        completed_count = len(self.completed_todos)
+        clip_preview = self.clipboard_history[0] if self.clipboard_history else "暂无剪贴板记录"
+        if len(clip_preview) > 16:
+            clip_preview = clip_preview[:16] + "..."
+
+        cards_data = [
+            {
+                "title": "文件重命名", "desc": "批量修饰文件名、前缀与格式整理", "target": "文件重命名",
+                "row": 0, "col": 0, "icon": "📁", "color": "#ffb900",
+                "badge": f"已选 {file_count} 个文件", "detail": file_detail
+            },
+            {
+                "title": "待办事项", "desc": "高效率管理已完成与未完成任务", "target": "待办清单",
+                "row": 0, "col": 1, "icon": "☑", "color": "#107c41",
+                "badge": f"进行中: {pending_count} | 已完成: {completed_count}",
+                "detail": f"最近待办: {self.pending_todos[0] if pending_count else '无'}"
+            },
+            {
+                "title": "剪贴板历史", "desc": "自动实时监听与历史记录复用", "target": "剪贴板历史",
+                "row": 1, "col": 0, "icon": "📋", "color": "#d13438",
+                "badge": f"已缓存 {len(self.clipboard_history)} 条", "detail": f"最新: {clip_preview}"
+            },
+            {
+                "title": "科学计算器", "desc": "支持快速算术与简单表达运算", "target": "计算器",
+                "row": 1, "col": 1, "icon": "🔢", "color": "#881798",
+                "badge": f"已完成 {len(self.calc_history)} 次运算", "detail": calc_detail
+            },
+            {
+                "title": "实时气象", "desc": "全球城市实时温度与气象查询", "target": "天气查询",
+                "row": 2, "col": 0, "icon": "🌤️", "color": "#ff8c00",
+                "badge": f"当前定位: {self.current_location_zh}", "detail": "自动获取本地气象预报"
+            },
+            {
+                "title": "界面主题", "desc": "切换浅色 (日间) / 深色 (夜间) 视图", "target": "TOGGLE_THEME",
+                "row": 2, "col": 1, "icon": "⚙️", "color": "#0078d4",
+                "badge": f"模式: {'暗夜深色' if self.is_dark_mode else '极光浅色'}", "detail": "一键全局平滑色彩切换"
+            }
+        ]
+
+        for item in cards_data:
+            card = FluentCard(grid_frame, radius=12, bg_color=self.colors["card_bg"],
+                              border_color=self.colors["card_border"])
+            card.grid(row=item["row"], column=item["col"], padx=8, pady=8, sticky="nsew")
+
+            inner = tk.Frame(card, bg=self.colors["card_bg"], cursor="hand2")
+            inner.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+            head_frame = tk.Frame(inner, bg=self.colors["card_bg"])
+            head_frame.pack(fill="x", padx=16, pady=(14, 2))
+
+            icon_box = tk.Frame(head_frame, bg=self.colors["entry_bg"], padx=8, pady=4)
+            icon_box.pack(side="left", padx=(0, 10))
+
+            ic_lbl = tk.Label(icon_box, text=item["icon"], fg=item["color"], bg=self.colors["entry_bg"],
+                              font=("Segoe UI Emoji", 14, "bold"))
+            ic_lbl.pack()
+
+            t_lbl = tk.Label(head_frame, text=item["title"], fg=self.colors["text_primary"], bg=self.colors["card_bg"],
+                             font=self.font_header)
+            t_lbl.pack(side="left", anchor="w")
+
+            d_lbl = tk.Label(inner, text=item["desc"], fg=self.colors["text_secondary"], bg=self.colors["card_bg"],
+                             font=self.font_small, anchor="w", justify="left")
+            d_lbl.pack(fill="x", padx=16, pady=(2, 8))
+
+            widget_card = tk.Frame(inner, bg=self.colors["entry_bg"], padx=10, pady=8)
+            widget_card.pack(fill="x", padx=16, pady=(0, 10))
+
+            badge_lbl = tk.Label(widget_card, text=f"• {item['badge']}", fg=item["color"], bg=self.colors["entry_bg"],
+                                 font=self.font_small, anchor="w")
+            badge_lbl.pack(fill="x")
+
+            detail_lbl = tk.Label(widget_card, text=item["detail"], fg=self.colors["text_secondary"],
+                                  bg=self.colors["entry_bg"], font=self.font_small, anchor="w")
+            detail_lbl.pack(fill="x", pady=(2, 0))
+
+            foot_frame = tk.Frame(inner, bg=self.colors["card_bg"])
+            foot_frame.pack(fill="x", padx=16, pady=(0, 10))
+
+            action_lbl = tk.Label(foot_frame, text="点击进入工具 ➔", fg=self.colors["accent"],
+                                  bg=self.colors["card_bg"], font=self.font_small)
+            action_lbl.pack(side="right")
+
+            action = self.toggle_theme if item["target"] == "TOGGLE_THEME" else (
+                lambda t=item["target"]: self.switch_page(t))
+            for w in (card, inner, head_frame, icon_box, ic_lbl, t_lbl, d_lbl, widget_card, badge_lbl, detail_lbl,
+                      foot_frame, action_lbl):
+                w.bind("<Button-1>", lambda e, act=action: act())
+
+    def _build_file_renamer(self, parent):
+        head = self._create_colored_label_group(parent, "📁", "文件批量重命名工具", font=self.font_subtitle)
+        head.pack(anchor="w", pady=(0, 15))
+
+        card = FluentCard(parent, radius=12, bg_color=self.colors["card_bg"], border_color=self.colors["card_border"])
+        card.pack(fill="both", expand=True)
+
+        inner = tk.Frame(card, bg=self.colors["card_bg"], padx=20, pady=20)
+        inner.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        # 改用标准的 tk.Button，解决点击响应和蓝色悬停问题
+        btn_select = tk.Button(inner, text="📂  选择目标文件...", command=self._select_files,
+                               bg=self.colors["accent"], fg="white",
+                               activebackground=self.colors["accent_hover"], activeforeground="white",
+                               relief="flat", bd=0, font=self.font_body, padx=14, pady=6, cursor="hand2")
+        btn_select.pack(anchor="w")
+
+        self.file_list_scroll_outer = tk.Frame(inner, bg=self.colors["entry_bg"])
+        self.file_list_scroll_outer.pack(fill="both", expand=True, pady=15)
+
+        self.file_canvas = tk.Canvas(self.file_list_scroll_outer, bg=self.colors["entry_bg"], highlightthickness=0,
+                                     bd=0)
+        self.file_scrollbar = tk.Scrollbar(self.file_list_scroll_outer, orient="vertical",
+                                           command=self.file_canvas.yview)
+
+        self.file_scroll_content = tk.Frame(self.file_canvas, bg=self.colors["entry_bg"])
+        self.file_scroll_content.bind("<Configure>",
+                                      lambda e: self.file_canvas.configure(scrollregion=self.file_canvas.bbox("all")))
+        self.file_canvas_window = self.file_canvas.create_window((0, 0), window=self.file_scroll_content, anchor="nw")
+
+        self.file_canvas.bind("<Configure>",
+                              lambda e: self.file_canvas.itemconfig(self.file_canvas_window, width=e.width))
+        self.file_canvas.configure(yscrollcommand=self.file_scrollbar.set)
+
+        self.file_canvas.pack(side="left", fill="both", expand=True)
+        self.file_scrollbar.pack(side="right", fill="y")
+
+        rule_frame = tk.Frame(inner, bg=self.colors["card_bg"])
+        rule_frame.pack(fill="x", pady=5)
+
+        rule_head = self._create_colored_label_group(rule_frame, "🏷️", "重命向前缀:", font=self.font_body)
+        rule_head.pack(side="left", padx=(0, 10))
+
+        self.prefix_entry = tk.Entry(rule_frame, bg=self.colors["entry_bg"], fg=self.colors["text_primary"],
+                                     insertbackground=self.colors["text_primary"], relief="flat", bd=0,
+                                     font=self.font_body)
+        self.prefix_entry.pack(side="left", fill="x", expand=True, ipady=6)
+
+        btn_run = tk.Button(inner, text="⚡  立即执行批量重命名", command=self._batch_rename,
+                            bg="#28a745", fg="white",
+                            activebackground="#218838", activeforeground="white",
+                            relief="flat", bd=0, font=self.font_header, padx=16, pady=6, cursor="hand2")
+        btn_run.pack(anchor="e", pady=(10, 0))
+
+        self._render_file_items()
+
+    def _render_file_items(self):
+        if not hasattr(self, "file_scroll_content") or not self.file_scroll_content.winfo_exists():
+            return
+        for child in self.file_scroll_content.winfo_children():
+            child.destroy()
+        for f in self.selected_files:
+            f_row = tk.Frame(self.file_scroll_content, bg=self.colors["entry_bg"])
+            f_row.pack(fill="x", pady=3, padx=5)
+            tk.Label(f_row, text="📄", fg=self.icon_colors["📄"], bg=self.colors["entry_bg"], font=self.font_small).pack(
+                side="left", padx=(5, 5))
+            tk.Label(f_row, text=os.path.basename(f), fg=self.colors["text_primary"], bg=self.colors["entry_bg"],
+                     font=self.font_small).pack(side="left")
+
+    def _select_files(self):
+        files = filedialog.askopenfilenames(title="选择需要重命名的文件")
+        if files:
+            self.selected_files = list(files)
+            self._render_file_items()
+
+    def _batch_rename(self):
+        prefix = self.prefix_entry.get().strip()
+        if not self.selected_files or not prefix:
+            messagebox.showwarning("提示", "请先选择文件并输入有效的前缀！")
+            return
+        try:
+            count = 0
+            for idx, file_path in enumerate(self.selected_files, start=1):
+                folder, ext = os.path.split(file_path)[0], os.path.splitext(file_path)[1]
+                new_path = os.path.join(folder, f"{prefix}_{idx}{ext}")
+                os.rename(file_path, new_path)
+                count += 1
+            messagebox.showinfo("成功", f"已成功重命名 {count} 个文件！")
+            self.selected_files.clear()
+            self._render_file_items()
+        except Exception as e:
+            messagebox.showerror("错误", str(e))
+
+    def _build_todo_list(self, parent):
+        head = self._create_colored_label_group(parent, "☑", "待办事项管理", font=self.font_subtitle)
+        head.pack(anchor="w", pady=(0, 15))
+
+        card = FluentCard(parent, radius=12, bg_color=self.colors["card_bg"], border_color=self.colors["card_border"])
+        card.pack(fill="both", expand=True)
+
+        inner = tk.Frame(card, bg=self.colors["card_bg"], padx=20, pady=20)
+        inner.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        input_frame = tk.Frame(inner, bg=self.colors["card_bg"])
+        input_frame.pack(fill="x", pady=(0, 15))
+
+        self.todo_entry = tk.Entry(input_frame, bg=self.colors["entry_bg"], fg=self.colors["text_primary"],
+                                   insertbackground=self.colors["text_primary"], relief="flat", bd=0,
+                                   font=self.font_body)
+        self.todo_entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 10))
+        self.todo_entry.bind("<Return>", lambda e: self._add_todo())
+
+        btn_add = tk.Button(input_frame, text="➕  新增待办", command=self._add_todo,
+                            bg=self.colors["accent"], fg="white",
+                            activebackground=self.colors["accent_hover"], activeforeground="white",
+                            relief="flat", bd=0, font=self.font_header, padx=16, cursor="hand2")
+        btn_add.pack(side="right")
+
+        lists_frame = tk.Frame(inner, bg=self.colors["card_bg"])
+        lists_frame.pack(fill="both", expand=True)
+        lists_frame.columnconfigure(0, weight=1, uniform="todo")
+        lists_frame.columnconfigure(1, weight=1, uniform="todo")
+        lists_frame.rowconfigure(0, weight=1)
+
+        left_col = tk.Frame(lists_frame, bg=self.colors["card_bg"])
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+
+        self._create_colored_label_group(left_col, "⏳", "未完成事项", font=self.font_header).pack(anchor="w",
+                                                                                                  pady=(0, 5))
+
+        self.pending_outer = tk.Frame(left_col, bg=self.colors["entry_bg"])
+        self.pending_outer.pack(fill="both", expand=True)
+
+        self.pending_canvas = tk.Canvas(self.pending_outer, bg=self.colors["entry_bg"], highlightthickness=0, bd=0)
+        self.pending_scrollbar = tk.Scrollbar(self.pending_outer, orient="vertical", command=self.pending_canvas.yview)
+
+        self.pending_scroll_content = tk.Frame(self.pending_canvas, bg=self.colors["entry_bg"])
+        self.pending_scroll_content.bind("<Configure>", lambda e: self.pending_canvas.configure(
+            scrollregion=self.pending_canvas.bbox("all")))
+        self.pending_canvas_window = self.pending_canvas.create_window((0, 0), window=self.pending_scroll_content,
+                                                                       anchor="nw")
+
+        self.pending_canvas.bind("<Configure>",
+                                 lambda e: self.pending_canvas.itemconfig(self.pending_canvas_window, width=e.width))
+        self.pending_canvas.configure(yscrollcommand=self.pending_scrollbar.set)
+
+        self.pending_canvas.pack(side="left", fill="both", expand=True)
+        self.pending_scrollbar.pack(side="right", fill="y")
+
+        left_btn_bar = tk.Frame(left_col, bg=self.colors["card_bg"])
+        left_btn_bar.pack(fill="x", pady=(8, 0))
+
+        btn_finish = tk.Button(left_btn_bar, text="✅  标记为完成", command=self._mark_completed,
+                               bg="#28a745", fg="white", activebackground="#218838", activeforeground="white",
+                               relief="flat", bd=0, font=self.font_small, padx=10, pady=4, cursor="hand2")
+        btn_finish.pack(side="left")
+
+        btn_del_p = tk.Button(left_btn_bar, text="🗑️  删除", command=self._delete_pending_todo,
+                              bg="#dc3545", fg="white", activebackground="#c82333", activeforeground="white",
+                              relief="flat", bd=0, font=self.font_small, padx=10, pady=4, cursor="hand2")
+        btn_del_p.pack(side="right")
+
+        right_col = tk.Frame(lists_frame, bg=self.colors["card_bg"])
+        right_col.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+
+        self._create_colored_label_group(right_col, "🎉", "已完成事项", font=self.font_header).pack(anchor="w",
+                                                                                                   pady=(0, 5))
+
+        self.completed_outer = tk.Frame(right_col, bg=self.colors["entry_bg"])
+        self.completed_outer.pack(fill="both", expand=True)
+
+        self.completed_canvas = tk.Canvas(self.completed_outer, bg=self.colors["entry_bg"], highlightthickness=0, bd=0)
+        self.completed_scrollbar = tk.Scrollbar(self.completed_outer, orient="vertical",
+                                                command=self.completed_canvas.yview)
+
+        self.completed_scroll_content = tk.Frame(self.completed_canvas, bg=self.colors["entry_bg"])
+        self.completed_scroll_content.bind("<Configure>", lambda e: self.completed_canvas.configure(
+            scrollregion=self.completed_canvas.bbox("all")))
+        self.completed_canvas_window = self.completed_canvas.create_window((0, 0), window=self.completed_scroll_content,
+                                                                           anchor="nw")
+
+        self.completed_canvas.bind("<Configure>",
+                                   lambda e: self.completed_canvas.itemconfig(self.completed_canvas_window,
+                                                                              width=e.width))
+        self.completed_canvas.configure(yscrollcommand=self.completed_scrollbar.set)
+
+        self.completed_canvas.pack(side="left", fill="both", expand=True)
+        self.completed_scrollbar.pack(side="right", fill="y")
+
+        right_btn_bar = tk.Frame(right_col, bg=self.colors["card_bg"])
+        right_btn_bar.pack(fill="x", pady=(8, 0))
+
+        btn_revert = tk.Button(right_btn_bar, text="↩️  移回未完成", command=self._revert_completed,
+                               bg=self.colors["btn_bg"], fg=self.colors["text_primary"],
+                               activebackground=self.colors["card_hover"], activeforeground=self.colors["text_primary"],
+                               relief="flat", bd=0, font=self.font_small, padx=10, pady=4, cursor="hand2")
+        btn_revert.pack(side="left")
+
+        btn_del_c = tk.Button(right_btn_bar, text="🗑️  删除", command=self._delete_completed_todo,
+                              bg="#dc3545", fg="white", activebackground="#c82333", activeforeground="white",
+                              relief="flat", bd=0, font=self.font_small, padx=10, pady=4, cursor="hand2")
+        btn_del_c.pack(side="right")
+
+        self.selected_pending_idx = None
+        self.selected_completed_idx = None
+
+        self._refresh_todo_lists()
+
+    def _refresh_todo_lists(self):
+        for child in self.pending_scroll_content.winfo_children():
+            child.destroy()
+        for child in self.completed_scroll_content.winfo_children():
+            child.destroy()
+
+        for idx, item in enumerate(self.pending_todos):
+            bg_col = self.colors["accent"] if self.selected_pending_idx == idx else self.colors["entry_bg"]
+            fg_col = "white" if self.selected_pending_idx == idx else self.colors["text_primary"]
+
+            row = tk.Frame(self.pending_scroll_content, bg=bg_col, cursor="hand2")
+            row.pack(fill="x", pady=2, padx=4)
+
+            ic_lbl = tk.Label(row, text="📌", fg=self.icon_colors["📌"], bg=bg_col, font=self.font_body)
+            ic_lbl.pack(side="left", padx=(8, 4), pady=4)
+            tx_lbl = tk.Label(row, text=item, fg=fg_col, bg=bg_col, font=self.font_body, anchor="w")
+            tx_lbl.pack(side="left", fill="x", expand=True, pady=4)
+
+            for w in (row, ic_lbl, tx_lbl):
+                w.bind("<Button-1>", lambda e, i=idx: self._select_pending_todo(i))
+
+        for idx, item in enumerate(self.completed_todos):
+            bg_col = self.colors["accent"] if self.selected_completed_idx == idx else self.colors["entry_bg"]
+            fg_col = "white" if self.selected_completed_idx == idx else self.colors["text_secondary"]
+
+            row = tk.Frame(self.completed_scroll_content, bg=bg_col, cursor="hand2")
+            row.pack(fill="x", pady=2, padx=4)
+
+            ic_lbl = tk.Label(row, text="✔", fg=self.icon_colors["✔"], bg=bg_col, font=self.font_body)
+            ic_lbl.pack(side="left", padx=(8, 4), pady=4)
+            tx_lbl = tk.Label(row, text=item, fg=fg_col, bg=bg_col, font=self.font_body, anchor="w")
+            tx_lbl.pack(side="left", fill="x", expand=True, pady=4)
+
+            for w in (row, ic_lbl, tx_lbl):
+                w.bind("<Button-1>", lambda e, i=idx: self._select_completed_todo(i))
+
+    def _select_pending_todo(self, idx):
+        self.selected_pending_idx = idx
+        self._refresh_todo_lists()
+
+    def _select_completed_todo(self, idx):
+        self.selected_completed_idx = idx
+        self._refresh_todo_lists()
+
+    def _add_todo(self):
+        text = self.todo_entry.get().strip()
+        if text:
+            self.pending_todos.append(text)
+            self._refresh_todo_lists()
+            self.todo_entry.delete(0, tk.END)
+
+    def _mark_completed(self):
+        if self.selected_pending_idx is not None and 0 <= self.selected_pending_idx < len(self.pending_todos):
+            item = self.pending_todos.pop(self.selected_pending_idx)
+            self.completed_todos.append(item)
+            self.selected_pending_idx = None
+            self._refresh_todo_lists()
+
+    def _revert_completed(self):
+        if self.selected_completed_idx is not None and 0 <= self.selected_completed_idx < len(self.completed_todos):
+            item = self.completed_todos.pop(self.selected_completed_idx)
+            self.pending_todos.append(item)
+            self.selected_completed_idx = None
+            self._refresh_todo_lists()
+
+    def _delete_pending_todo(self):
+        if self.selected_pending_idx is not None and 0 <= self.selected_pending_idx < len(self.pending_todos):
+            del self.pending_todos[self.selected_pending_idx]
+            self.selected_pending_idx = None
+            self._refresh_todo_lists()
+
+    def _delete_completed_todo(self):
+        if self.selected_completed_idx is not None and 0 <= self.selected_completed_idx < len(self.completed_todos):
+            del self.completed_todos[self.selected_completed_idx]
+            self.selected_completed_idx = None
+            self._refresh_todo_lists()
+
+    # ================= 剪贴板监听与卡片列表 =================
+    def monitor_clipboard(self):
+        try:
+            clip = self.root.clipboard_get().strip()
+            if clip and clip != self.last_clipboard_text:
+                self.last_clipboard_text = clip
+                if clip in self.clipboard_history:
+                    self.clipboard_history.remove(clip)
+                self.clipboard_history.insert(0, clip)
+                if len(self.clipboard_history) > 50:
+                    self.clipboard_history.pop()
+
+                if getattr(self, "current_page_name", "") == "剪贴板历史":
+                    self._refresh_clipboard_cards()
+        except tk.TclError:
+            pass
+        self.root.after(1000, self.monitor_clipboard)
+
+    def _build_clipboard_history(self, parent):
+        top_frame = tk.Frame(parent, bg=self.colors["window_bg"])
+        top_frame.pack(fill="x", pady=(0, 10))
+
+        self._create_colored_label_group(top_frame, "📋", "剪贴板历史记录", font=self.font_subtitle).pack(side="left")
+
+        btn_clear = tk.Button(top_frame, text="🧹  清空历史", command=self._clear_clipboard_history,
+                              bg="#dc3545", fg="white", activebackground="#c82333", activeforeground="white",
+                              relief="flat", bd=0, font=self.font_small, padx=12, pady=4, cursor="hand2")
+        btn_clear.pack(side="right")
+
+        scroll_outer = tk.Frame(parent, bg=self.colors["window_bg"])
+        scroll_outer.pack(fill="both", expand=True)
+
+        self.clip_canvas = tk.Canvas(scroll_outer, bg=self.colors["window_bg"], highlightthickness=0, bd=0)
+        self.clip_scrollbar = tk.Scrollbar(scroll_outer, orient="vertical", command=self.clip_canvas.yview)
+
+        self.clip_scroll_content = tk.Frame(self.clip_canvas, bg=self.colors["window_bg"])
+        self.clip_scroll_content.bind(
+            "<Configure>",
+            lambda e: self.clip_canvas.configure(scrollregion=self.clip_canvas.bbox("all"))
+        )
+
+        self.clip_canvas_window = self.clip_canvas.create_window((0, 0), window=self.clip_scroll_content, anchor="nw")
+
+        def _on_canvas_configure(event):
+            self.clip_canvas.itemconfig(self.clip_canvas_window, width=event.width)
+
+        self.clip_canvas.bind("<Configure>", _on_canvas_configure)
+        self.clip_canvas.configure(yscrollcommand=self.clip_scrollbar.set)
+
+        self.clip_canvas.pack(side="left", fill="both", expand=True)
+        self.clip_scrollbar.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            self.clip_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        self.clip_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        self._refresh_clipboard_cards()
+
+    def _refresh_clipboard_cards(self):
+        if not hasattr(self, "clip_scroll_content") or not self.clip_scroll_content.winfo_exists():
+            return
+
+        for child in self.clip_scroll_content.winfo_children():
+            child.destroy()
+
+        if not self.clipboard_history:
+            empty_card = FluentCard(self.clip_scroll_content, radius=10, bg_color=self.colors["card_bg"],
+                                    border_color=self.colors["card_border"])
+            empty_card.pack(fill="x", pady=10, ipady=20)
+            self._create_colored_label_group(empty_card, "⌛", "剪贴板历史为空", font=self.font_body,
+                                             text_fg=self.colors["text_secondary"]).pack()
+            return
+
+        for idx, text in enumerate(self.clipboard_history):
+            card_item = FluentCard(
+                self.clip_scroll_content,
+                radius=10,
+                bg_color=self.colors["card_bg"],
+                border_color=self.colors["card_border"]
+            )
+            card_item.pack(fill="x", pady=6, padx=2)
+
+            inner = tk.Frame(card_item, bg=self.colors["card_bg"], padx=12, pady=10)
+            inner.pack(fill="both", expand=True)
+
+            card_head = tk.Frame(inner, bg=self.colors["card_bg"])
+            card_head.pack(fill="x", pady=(0, 4))
+
+            tk.Label(card_head, text=f"记录 #{idx + 1}", fg=self.colors["text_secondary"], bg=self.colors["card_bg"],
+                     font=self.font_small).pack(side="left")
+
+            btn_copy = tk.Button(
+                card_head, text="📋  复制此项", command=lambda t=text: self._copy_specific_text(t),
+                bg=self.colors["accent"], fg="white", activebackground=self.colors["accent_hover"],
+                activeforeground="white",
+                relief="flat", bd=0, font=self.font_small, padx=8, pady=2, cursor="hand2"
+            )
+            btn_copy.pack(side="right")
+
+            lines = text.splitlines()
+            display_lines = lines[:6]
+            short_text = "\n".join(display_lines)
+            if len(lines) > 6:
+                short_text += f"\n... [剩余 {len(lines) - 6} 行已折叠]"
+
+            lbl_content = tk.Label(
+                inner, text=short_text,
+                fg=self.colors["text_primary"], bg=self.colors["card_bg"],
+                font=self.font_small,
+                justify="left", anchor="w", wraplength=700
+            )
+            lbl_content.pack(fill="x")
+
+    def _copy_specific_text(self, txt):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(txt)
+        self.last_clipboard_text = txt
+        messagebox.showinfo("成功", "已成功复制到系统剪贴板！")
+
+    def _clear_clipboard_history(self):
+        self.clipboard_history.clear()
+        self._refresh_clipboard_cards()
+
+    # ================= 计算器与天气查询 =================
+    def _build_calculator(self, parent):
+        head = self._create_colored_label_group(parent, "🔢", "快捷计算器", font=self.font_subtitle)
+        head.pack(anchor="w", pady=(0, 15))
+
+        card = FluentCard(parent, radius=12, bg_color=self.colors["card_bg"], border_color=self.colors["card_border"])
+        card.pack(fill="both", expand=True)
+
+        inner = tk.Frame(card, bg=self.colors["card_bg"], padx=20, pady=15)
+        inner.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        main_split = tk.Frame(inner, bg=self.colors["card_bg"])
+        main_split.pack(fill="both", expand=True)
+
+        left_calc = tk.Frame(main_split, bg=self.colors["card_bg"])
+        left_calc.pack(side="left", fill="both", expand=True, padx=(0, 15))
+
+        self.calc_display = tk.Entry(left_calc, bg=self.colors["entry_bg"], fg=self.colors["text_primary"],
+                                     font=self.font_calc_display, justify="right", relief="flat", bd=0)
+        self.calc_display.pack(fill="x", ipady=8, pady=(0, 10))
+
+        buttons = [
+            ("C", 1, 0), ("CE", 1, 1), ("←", 1, 2), ("÷", 1, 3),
+            ("7", 2, 0), ("8", 2, 1), ("9", 2, 2), ("×", 2, 3),
+            ("4", 3, 0), ("5", 3, 1), ("6", 3, 2), ("-", 3, 3),
+            ("1", 4, 0), ("2", 4, 1), ("3", 4, 2), ("+", 4, 3),
+            ("0", 5, 0), (".", 5, 1), ("=", 5, 2)
+        ]
+
+        grid = tk.Frame(left_calc, bg=self.colors["card_bg"])
+        grid.pack(expand=True, fill="both")
+
+        for i in range(4): grid.grid_columnconfigure(i, weight=1)
+        for i in range(1, 6): grid.grid_rowconfigure(i, weight=1)
+
+        for text, r, c in buttons:
+            colspan = 2 if text == "=" else 1
+            bg_btn = self.colors["btn_bg"]
+            if text in ["÷", "×", "-", "+", "="]: bg_btn = self.colors["accent"]
+
+            btn = tk.Button(grid, text=text, bg=bg_btn,
+                            fg="white" if text in ["÷", "×", "-", "+", "="] else self.colors["text_primary"],
+                            font=self.font_calc_btn, relief="flat", bd=0, cursor="hand2",
+                            command=lambda t=text: self._on_calc_btn_click(t))
+            btn.grid(row=r, column=c, columnspan=colspan, padx=3, pady=3, sticky="nsew")
+
+        right_hist = tk.Frame(main_split, bg=self.colors["entry_bg"], width=220)
+        right_hist.pack(side="right", fill="y")
+        right_hist.pack_propagate(False)
+
+        tk.Label(right_hist, text="📜 计算历史记录", fg=self.colors["text_primary"], bg=self.colors["entry_bg"],
+                 font=self.font_header).pack(anchor="w", padx=10, pady=8)
+
+        self.calc_hist_listbox = tk.Listbox(right_hist, bg=self.colors["entry_bg"], fg=self.colors["text_secondary"],
+                                            relief="flat", bd=0, highlightthickness=0, font=self.font_small)
+        self.calc_hist_listbox.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        self._refresh_calc_hist_display()
+
+    def _refresh_calc_hist_display(self):
+        if hasattr(self, "calc_hist_listbox") and self.calc_hist_listbox.winfo_exists():
+            self.calc_hist_listbox.delete(0, tk.END)
+            for item in reversed(self.calc_history):
+                self.calc_hist_listbox.insert(tk.END, f"  {item}")
+
+    def _on_calc_btn_click(self, char):
+        curr = self.calc_display.get()
+        if char in ["C", "CE"]:
+            self.calc_display.delete(0, tk.END)
+        elif char == "←":
+            self.calc_display.delete(len(curr) - 1, tk.END)
+        elif char == "=":
+            try:
+                expr = curr.replace("×", "*").replace("÷", "/")
+                res = eval(expr)
+                res_str = str(res)
+
+                hist_item = f"{curr} = {res_str}"
+                self.calc_history.append(hist_item)
+
+                self.calc_display.delete(0, tk.END)
+                self.calc_display.insert(tk.END, res_str)
+                self._refresh_calc_hist_display()
+            except Exception:
+                self.calc_display.delete(0, tk.END)
+                self.calc_display.insert(tk.END, "Error")
+        else:
+            if curr == "Error": self.calc_display.delete(0, tk.END)
+            self.calc_display.insert(tk.END, char)
+
+    def _build_weather_query(self, parent):
+        head = self._create_colored_label_group(parent, "🌤️", "实时天气查询", font=self.font_subtitle)
+        head.pack(anchor="w", pady=(0, 15))
+
+        card = FluentCard(parent, radius=12, bg_color=self.colors["card_bg"], border_color=self.colors["card_border"])
+        card.pack(fill="both", expand=True)
+
+        inner = tk.Frame(card, bg=self.colors["card_bg"], padx=20, pady=20)
+        inner.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        search_bar = tk.Frame(inner, bg=self.colors["card_bg"])
+        search_bar.pack(fill="x", pady=(0, 15))
+
+        self.city_entry = tk.Entry(search_bar, bg=self.colors["entry_bg"], fg=self.colors["text_primary"],
+                                   insertbackground=self.colors["text_primary"], font=self.font_body,
+                                   relief="flat", bd=0)
+        self.city_entry.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 10))
+
+        self.city_entry.insert(0, self.current_location_zh)
+        self.city_entry.bind("<Return>", lambda e: self._fetch_weather_async())
+
+        self.btn_search = tk.Button(search_bar, text="🔍  查询", command=self._fetch_weather_async,
+                                    bg=self.colors["accent"], fg="white", activebackground=self.colors["accent_hover"],
+                                    activeforeground="white",
+                                    relief="flat", bd=0, font=self.font_header, padx=15, cursor="hand2")
+        self.btn_search.pack(side="right")
+
+        self.weather_res_card = FluentCard(inner, radius=8, bg_color=self.colors["entry_bg"],
+                                           border_color=self.colors["card_border"], height=220)
+        self.weather_res_card.pack(fill="both", expand=True, pady=10)
+
+        self.weather_info_frame = tk.Frame(self.weather_res_card, bg=self.colors["entry_bg"])
+        self.weather_info_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        self._create_colored_label_group(self.weather_info_frame, "🌍",
+                                         "请输入城市名称（如 上海, 桃园, 北京）后点击查询...", font=self.font_body,
+                                         text_fg=self.colors["text_secondary"]).pack(anchor="nw")
+
+        if self.current_location_zh != "正在获取定位...":
+            self._fetch_weather_async()
+
+    def _fetch_weather_async(self):
+        city = self.city_entry.get().strip()
+        if not city: return
+        for child in self.weather_info_frame.winfo_children():
+            child.destroy()
+
+        lbl_load = tk.Label(self.weather_info_frame, text=f"📡 正在同步【{city}】气象数据...",
+                            fg=self.colors["accent"], bg=self.colors["entry_bg"], font=self.font_body)
+        lbl_load.pack(anchor="nw")
+
+        self.btn_search.config(state="disabled")
+        threading.Thread(target=self._query_weather_api, args=(city,), daemon=True).start()
+
+    def _query_weather_api(self, city):
+        try:
+            url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1&lang=zh"
+            req = urllib.request.Request(url,
+                                         headers={"User-Agent": "curl/7.68.0", "Accept-Language": "zh-CN,zh;q=0.9"})
+            with urllib.request.urlopen(req, timeout=8) as response:
+                data = json.loads(response.read().decode('utf-8'))
+
+            curr = data["current_condition"][0]
+
+            raw_desc = ""
+            if "lang_zh-cn" in curr and curr["lang_zh-cn"]:
+                raw_desc = curr["lang_zh-cn"][0]["value"]
+            elif "lang_zh" in curr and curr["lang_zh"]:
+                raw_desc = curr["lang_zh"][0]["value"]
+            elif "weatherDesc" in curr and curr["weatherDesc"]:
+                raw_desc = curr["weatherDesc"][0]["value"]
+
+            desc = translate_weather(raw_desc)
+
+            info_rows = [
+                ("📍", f"目标城市/地区：{city}"),
+                ("🌈", f"天气状况：{desc}"),
+                ("🌡️", f"当前气温：{curr.get('temp_C', 'N/A')} °C  (体感 {curr.get('FeelsLikeC', 'N/A')} °C)"),
+                ("💧", f"相对湿度：{curr.get('humidity', 'N/A')} %"),
+                ("💨", f"风速风向：{curr.get('windspeedKmph', 'N/A')} km/h")
+            ]
+
+            self.root.after(0, lambda: self._show_weather_res_colorful(info_rows))
+        except Exception as e:
+            self.root.after(0, lambda: self._show_weather_error(f"❌ 获取失败: {str(e)}"))
+
+    def _show_weather_res_colorful(self, info_rows):
+        for child in self.weather_info_frame.winfo_children():
+            child.destroy()
+
+        for ic, text in info_rows:
+            ic_col = self.icon_colors.get(ic, self.colors["text_primary"])
+            row_frame = tk.Frame(self.weather_info_frame, bg=self.colors["entry_bg"])
+            row_frame.pack(fill="x", pady=4)
+
+            tk.Label(row_frame, text=ic, fg=ic_col, bg=self.colors["entry_bg"], font=self.font_header, width=3,
+                     anchor="w").pack(side="left")
+            tk.Label(row_frame, text=text, fg=self.colors["text_primary"], bg=self.colors["entry_bg"],
+                     font=self.font_body, anchor="w").pack(side="left")
+
+        self.btn_search.config(state="normal")
+
+    def _show_weather_error(self, err_msg):
+        for child in self.weather_info_frame.winfo_children():
+            child.destroy()
+        tk.Label(self.weather_info_frame, text=err_msg, fg="#ff605c", bg=self.colors["entry_bg"],
+                 font=self.font_body).pack(anchor="nw")
+        self.btn_search.config(state="normal")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = Win11App(root)
+    root.mainloop()
